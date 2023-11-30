@@ -1,0 +1,505 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Nov 30 15:50:40 2023
+
+@author: USER
+"""
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Apr 21 15:47:52 2023
+
+@author: jriaz
+"""
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Apr 18 16:41:02 2023
+
+@author: jriaz
+"""
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Jan 18 12:30:46 2023
+
+@author: jriaz
+"""
+
+#!/usr/bin/env python
+# Time-stamp: <2022-06-27 13:05:34 dkunkel>
+
+'''
+A script to derive Theta - EQLAT (with own eql)
+distributions of PV and other tracers
+
+This code transforms the Theta coordinate   \n
+to distance to the 2 PVU coordinate \n
+delta_theta= theta-2PVU[time,theta,lat,lon] \n
+
+and calculates 2D bin statistics on EQLAT and delta_theta coordinate /n
+this process helps to distinguish between the PV variability and  /n
+trace variability near the tropopause or below the tropopause  
+
+
+Local functions:
+
+- get_current_time : convert time info to real time stamp
+- get_var          : generic function to get a variable from nc file
+- regrid_for_2d    : regrid data on isentropes according to eql
+- get_levels       : set plot levels
+- calc_area        : calculate surface area of each grid box
+- eqvlat           : calculate eql based on Zhu and Nakamura, adjusted by DK, 
+                     takes the area of an isentropic surface into account
+- plot_var_ver     : plot routine
+
+'''
+
+import netCDF4 as nc
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy.ma as ma
+import sys,os
+import numbers
+import datetime
+from scipy.stats import binned_statistic_2d
+
+# output to screen?
+toscreen=True
+# save output as file? see savefig command
+lsavefig=True
+
+'''
+Theta analysis range
+EQL will only be calculated between the given levels
+PLOTTING will only be done between these levels
+'''
+vertmin=300
+vertmax=450
+
+
+lcalc_eql=False
+'''
+ set hemisphere 
+ Caution: needs to be more flexibel
+ Potentially a list with three options ['north', 'south', 'global']
+'''    
+hemi='south'
+
+def get_current_time(t):
+    '''
+    Input: t time in seconds from time variable
+
+    '''
+    # set refdate
+    # 2000/01/01 00:00
+    ref = datetime.datetime(2000, 1, 1, 00, 00)
+    cdate= ref + datetime.timedelta(seconds=t)
+    return cdate
+
+def get_var(f,var):
+    '''
+    Get variable <var> from file <f>
+    Return variable object <d>
+    Access data with: deql_4d=[:]
+    <d> has also attributes like unit, long_name...
+    '''
+    ff=nc.Dataset(f,'r')
+    assert var in list(ff.variables.keys())
+    d=ff.variables[var]
+   
+    return d
+
+    
+def regrid_for_2d(var, eql, lev,xnum,ynum,xcfill=None,ycfill=None,dfill=None,method='mean', hemi='north'):
+    '''
+    a pole centric regridding based on eql, this has to be done
+    hemispherically
+    # input
+
+    * var: variable to be regridded; dimension=(ntime, nlat, nlon)
+    * eql: equivalent latitude; dimension=(ntime, nlat, nlon)
+    * lev: theta lev 
+    * neql: eql level; dimension=(neql) 
+
+    # output:
+    * outvar: dimension=(neql.shape)
+    '''
+    print (f' -------------- \n Regrid data for level {lev}')
+
+    # neql should run from pole to equator
+    #if hemi=='north':
+    #    neql=np.arange(90.,0.9, -1.)
+    #elif hemi=='south':
+    #    neql=np.arange(-90.,-0.9, 1.) 
+    print(regrid_for_2d.__name__,var.shape,eql.shape,lev.shape)
+    # make the arrays 1D 
+    xn=[]
+    yn=[]
+    dn=[]
+    for s in range(0,var.shape[0]):
+        '''
+        there is a todo: the last condition should not be there, but without I get
+        sometimes issues with FillValues still being there in computed y-axis data ...
+        '''
+        if np.isfinite(eql[s]).any() and np.isfinite(lev[s]).any() and np.isfinite(var[s]).any() and lev[s].any() < 1.e12:
+            xn.append(eql[s])
+            yn.append(lev[s])
+            dn.append(var[s])
+    
+    # make numpy arrays
+    eql=np.array(xn[:], dtype=np.float32).flatten()
+    lev=np.array(yn[:], dtype=np.float32).flatten()
+    var=np.array(dn[:], dtype=np.float32).flatten()
+    
+    
+    
+    # print (' Test:')
+    print (eql.shape,lev.shape,var.shape)
+    print (eql.max(),eql.min(),lev.max(),lev.min(),var.max(),var.min())
+    print (xnum,ynum)
+    print (' End test' )
+    #sys.exit()
+    
+    eql[eql==xcfill]=np.nan
+    lev[lev==ycfill]=np.nan
+    var[var==dfill]=np.nan
+    
+
+    # array to save output with dimension of neql
+
+    '''add other statistics like count and relative std'''
+    n = binned_statistic_2d(eql, lev, values = var, statistic='count',bins=[xnum,ynum]).statistic
+    
+   
+    # the x-values
+    xi = binned_statistic_2d(eql,lev,values=var, statistic='count',bins=[xnum,ynum]).x_edge
+    # the y-values
+    yi = binned_statistic_2d(eql,lev,values=var, statistic='count',bins=[xnum,ynum]).y_edge
+    # bin number ...
+    nbin = binned_statistic_2d(eql,lev,values=var, statistic='count',bins=[xnum,ynum],expand_binnumbers=True).binnumber
+    
+    ''' binned statistics mean, std, rstd '''
+    if method=='mean':
+        print (" <<< binning: mean >>>")
+        dbin = binned_statistic_2d(eql,lev,values=var, statistic='mean',bins=[xnum,ynum]).statistic
+    
+    elif method=='n':
+        print (" <<< binning: count >>>" ) 
+        dbin = binned_statistic_2d(eql,lev,values=var, statistic='count',bins=[xnum,ynum]).statistic
+        
+    elif method=='absdev':
+        print (" <<< binning: standard deviation >>>" )
+        dbin = binned_statistic_2d(eql,lev,values=var, statistic=lambda var: np.std(var[:]),bins=[xnum,ynum]).statistic
+    elif method=='reldev':
+        print (" <<< binning: normalized standard deviation >>>" )
+        
+        dbin1 = binned_statistic_2d(eql,lev,values=var, statistic=lambda var: np.std(var),bins=[xnum,ynum]).statistic
+        dbin2 = binned_statistic_2d(eql,lev,values=var, statistic='mean',bins=[xnum,ynum]).statistic
+        dbin=dbin1/dbin2
+
+    return [dbin,n,xi,yi]
+def stat_longnames(stat_methods):
+    stat_longname={}
+    stat_longname['n'] = 'number of data points in bin'
+    stat_longname['min'] = 'minimum value in bin'
+    stat_longname['max'] = 'maximum value in bin'
+    stat_longname['mean'] = 'mean value in bin'
+    stat_longname['median'] = 'median value in bin'
+    stat_longname['absdev'] = 'standard deviation in bin'
+    stat_longname['reldev'] = 'relative standard deviation in bin'
+    
+
+    ret={}
+    for i in stat_methods:
+        ret[i]=stat_longname[i]
+    return ret
+
+
+def get_levels(var, method):
+
+    if method=='mean':
+        if var=='CO':
+            l=np.arange(0,1,0.005)
+            #print('CO', l)
+        elif var == 'PV':
+            l= np.arange(-1,20.1,1.)
+    elif method=='std':
+        if var=='CO':
+            l=np.arange(0,1,0.005)
+            #print('CO', l)
+        elif var == 'PV':
+            l= np.arange(0,4.,.5)
+
+    return l
+
+
+# get the area of each grid box
+
+
+   
+
+def main(f,var,clon=0,lstat='mean'):
+
+    '''
+    Plot data on isentropic surface
+    input:
+    f: path to file 
+    var: variable to be plotted
+    height: isentropic surface
+    '''
+   
+    
+    # get variable
+    d=get_var(f, var)
+
+    # get lon and lat
+    lats=get_var(f,'lat')
+    theta=get_var(f,'theta')
+    lons= get_var(f,'lon')
+    time=get_var(f,'time')
+    # and theta stuff
+    thmin=np.argmin(np.abs(theta[:]-vertmin))
+    thmax=np.argmin(np.abs(theta[:]-vertmax))
+    #print (thmin, thmax, theta[thmin], theta[thmax], vertmin, vertmax)
+    
+   
+    if lcalc_eql:
+        # use only northern or southern hemisphere, include 0
+        if hemi=='north':
+            PV_e=d[:,thmin:thmax+1,0:int(lats.shape[0]/2)+1,:]
+            lat_e=lats[0:int(lats.shape[0]/2)+1]
+        elif hemi=='south':
+            PV_e=d[:,thmin:thmax,:,int(lats.shape[0]/2)+1:,:]
+            lat_e=lats[int(lats.shape[0]/2)+1:]
+        print (' Calculate EQLat for hemisphere(s): ', hemi, \
+            '\n Lat borders: ', lat_e[0], lat_e[-1], sep=' ')
+    
+    
+        # now we need the area of each grid box
+        area=calc_area(lons,lat_e)
+        
+        # now calculate eqlat for each isentropic level
+        # init a helper variable with the same dimension as pv
+        npoints=100
+        # eql_bin and pv_bin show the EQL-PV relationship for each isentropic layer and
+        # each time step
+        eql_bin=np.zeros((time.shape[0],theta[thmin:thmax+1].shape[0],npoints))
+        pv_bin=np.zeros((time.shape[0],theta[thmin:thmax+1].shape[0],npoints))
+        theta_red=theta[thmin:thmax+1]
+    
+        for t in range(time.shape[0]):
+            
+            print (f' calculate eql for time  {get_current_time(int(time[t].data)).date()}')
+            #print (f' calculate eql for time {get_current_time(time[t].data).time()}')
+            for k in range(0, theta_red.shape[0]):
+                #print (' calculate eql for level ', theta_red[k], 'K', sep=' ')
+                # make pv a 2d variable (on an isentrope)
+                pv2d=PV_e[t,k,:,:]
+                # call eqvlat, lat should be in ascending order!
+                eql_bin[t,k,:],pv_bin[t,k,:]=eqvlat(lat_e[::-1], pv2d[::-1,:],area[::-1,:], npoints)
+                if t==0:
+                    plt.plot(eql_bin[t,k,:],pv_bin[t,k,:], label=theta_red[k])
+            if t==0:
+                plt.grid()
+                plt.legend()
+                if toscreen:
+                    plt.show()  
+    
+        # Get eql on the grid!
+        eql_4d=np.zeros((time.shape[0],theta_red.shape[0],lat_e.shape[0],lons.shape[0])) # eql_4d <=> assiciated to pv[:,:,:,:]
+        # print(eql_4d.shape)
+        for t in range(time.shape[0]):
+           
+            print (f' eql_4d for time {get_current_time(int(time[t].data)).date()}')
+            for k in range(0,theta_red.shape[0]): #EqLat.shape[1]):
+    
+                # do it for each level
+                eql_lev=eql_bin[t,k,:]  # eql_bin <= EqLat (return value from eqvlat)
+                pv_lev=pv_bin[t,k,:]    # pv_bin <= pv (return value from eqvlat)
+                
+                # Find equivalent latitude:
+                inds = np.digitize(PV_e[t,k,:,:], pv_lev) # PV_e[k,:,:] is from reanalysis data
+                
+                # 
+                for i in range(0,lons.shape[0]):
+                    if hemi=='north':
+                        for j in range(0,int(lats.shape[0]/2)+1): # NORTHERN HEMI!!
+                        
+                            if PV_e[t,k,j,i] < 1.e14 and PV_e[t,k,j,i] > -1.e14 and inds[j,i]<100:
+                                eql_4d[t,k,j,i]=eql_lev[inds[j,i]]    
+                            else:
+                                '''
+                                if PV values are not defined, set eql to nan
+                                '''
+                                eql_4d[t,k,j,i]=np.nan
+                    
+                    elif hemi=='south':
+                        
+                        for j in range( int(lats.shape[0]/2)+1, lats.shape[0] ):  # sOUTHERN HEMI                  
+                            if PV_e[t,k,j,i] < 1.e14 and PV_e[t,k,j,i] > -1.e14 and inds[j,i]<100:
+                                eql_4d[t,k,j,i]=eql_lev[inds[j,i]]    
+                            else:
+                                '''
+                                if PV values are not defined, set eql to nan
+                                '''
+                                eql_4d[t,k,j,i]=np.nan
+    
+        # test plot
+        x,y=np.meshgrid(lons,lat_e)
+        i360=np.abs(theta_red[:]-360.).argmin()
+        cx=plt.contourf(x,y,PV_e[0,i360,:,:], levels=np.arange(-1,21,1.), cmap='magma_r')
+        plt.colorbar(cx)
+        #plt.contour(x,y,eql_4d[0,i360,:,:])
+        plt.show()            
+    else:
+        if hemi=='north':
+            latmin=0
+            latmax=int(lats.shape[0]/2)+1
+        elif hemi=='south':
+            latmin=int(lats.shape[0]/2)+1
+            latmax=lats.shape[0]
+            
+        eql_4d=get_var(f,'EQLAT')[:,thmin:thmax+1,latmin:latmax,:]
+        theta_red=theta[thmin:thmax+1]
+        PV_e=d[:,thmin:thmax+1,latmin:latmax,:]
+        brunt_vaisala= get_var(f,'BVF')[:,thmin:thmax+1,latmin:latmax,:]
+        #PV= get_var(f, 'PV')[:,thmin:thmax+1,latmin:latmax,:]
+        lev=get_var(f,'D_2_0PVU_BOT')[:,thmin:thmax+1,latmin:latmax,:]
+        u_wind= get_var(f,'U')[:,thmin:thmax+1,latmin:latmax,:]
+    '''
+    # now do the regridding
+    # regridding function works on a height-lat grid, so loop
+    # outside over time and longitude
+    '''
+    if hemi=='north':
+        neql=np.arange(0,90,5.)
+    elif hemi=='south':
+        neql=np.arange(-90.,0,5.)
+    
+    theta_lev= np.arange(-30.,60.,5)    
+    stat_methods=['n','mean','absdev','reldev']
+    
+    bin_stat={} # dict for the binned statistic value
+    # it is expected that the individual entries are the same for
+    # each metric for the following:
+    n_stat={}   # dict for the number of points
+    x_stat={}   # dict for x axis of binned statistic
+    y_stat={}   # dict for y axis of binned statistic
+    bin_stat_wind={} # dict for the binned statistic value
+    # it is expected that the individual entries are the same for
+    # each metric for the following:
+    n_stat_wind={}   # dict for the number of points
+    x_stat_wind={}   # dict for x axis of binned statistic
+    y_stat_wind={} 
+    d
+    for stat in ['mean','absdev','reldev']: #stat_longnames(stat_methods):
+        bin_stat[stat], n_stat[stat],x_stat[stat],y_stat[stat]=\
+            regrid_for_2d(PV_e[:], eql_4d[:], lev[:],neql,theta_lev,xcfill=None,ycfill=None,dfill=None,method=stat, hemi='north')
+            
+    for stat in ['mean','absdev','reldev']: #stat_longnames(stat_methods):
+        bin_stat_wind[stat], n_stat_wind[stat],x_stat_wind[stat],y_stat_wind[stat]=\
+            regrid_for_2d(u_wind[:], eql_4d[:], lev[:],neql,theta_lev,xcfill=None,ycfill=None,dfill=None,method=stat, hemi='north')         
+        #plt.plot(neql[:], plot_mean[k,:], label=theta_red[k])
+        
+    #print(np.where(bin_stat['mean']==bin_stat['mean'],x_stat['mean'],y_stat['mean']))
+    print ('MEAN', bin_stat['mean'].shape)
+    print ('X', x_stat['mean'].shape, y_stat['mean'].shape)
+    bin_mean= np.nan_to_num(bin_stat['mean']).astype(np.int)
+    bin_2pv= np.asarray((bin_mean[bin_mean==-2])).flatten()
+    #print('2pv',bin_mean[bin_mean==-2])
+    #sys.exit()
+    xs=np.asarray(x_stat['mean'])
+    ys=np.asarray(y_stat['mean'])
+    xp=np.zeros((xs.shape[0]-1))
+    for n in range(xp.shape[0]):
+        xp[n]= (xs[n]+xs[n+1])/2.
+    yp=np.zeros((ys.shape[0]-1))
+    for n in range(yp.shape[0]):
+        yp[n]= (ys[n]+ys[n+1])/2.
+    
+    #print('shape',bin_stat['mean'])
+    print(xp.shape,yp.shape,xp,xp[3:])
+    #sys.exit()
+    if lcalc_eql == False:
+        fig,ax = plt.subplots(ncols=1, nrows=1, figsize=(11,8))
+        if hemi== 'south':
+            cc=plt.pcolormesh(xp[2:],yp,-bin_stat['reldev'][2:,:].T,shading='Auto',cmap='inferno_r',vmin=0.0,vmax=0.9)
+    
+            cs2=plt.contour(xp[2:],yp,-bin_stat['mean'][2:,:].T,np.arange(2,2.5,0.5),linestyles='solid',linewidth=1.2,colors='k')
+            ax.clabel(cs2,fmt="%.1f")
+            
+        else: 
+            #cc=plt.contourf(xp,yp,bin_stat['reldev'][:,:].T,np.arange(0,1,0.1),cmap='inferno_r')
+            cc=plt.pcolormesh(xp[2:],yp,bin_stat['reldev'][2:,:].T,shading='Auto',cmap='inferno_r',vmin=0.0,vmax=0.9)
+    
+            cs2=plt.contour(xp[2:],yp,bin_stat['mean'][2:,:].T,np.arange(2,2.5,0.5),linestyles='solid',linewidth=1.2,colors='k')
+            
+            ax.clabel(cs2,fmt="%.1f")
+            #cs1=plt.contour(xp[2:9],yp,bin_stat_wind['mean'][2:9,:].T,linestyles='solid',linewidth=1.2,colors='k')
+            #ax.clabel(cs1,fmt="%.1f")
+    
+        ax.set_xlabel('Equivalent Latitude (degN)', fontsize=14)
+        ax.set_ylabel(' Δ Pot. Temperature (K)', fontsize=14)
+        ax.tick_params(axis='both', labelsize=14)
+        
+         # add a colorbar
+        cbar = plt.colorbar(cc,shrink=0.9,\
+                           orientation='vertical',\
+                           label=d.long_name+ ' ('+d.units+') relative std ')
+    
+        
+        
+        # add a colorbar
+        
+    
+        # Add some info into the figure
+        if hemi=='south':
+            textstr = ' Dec 2017 SH'
+        else:
+            textstr = 'Dec 2017 NH'
+            
+        # these are matplotlib.patch.Patch properties
+        props = dict(boxstyle='round', facecolor='white', alpha=0.5)
+        
+        if hemi== 'south':
+            # place a text box in upper left in axes coords
+            ax.text(-78, 48, textstr,  fontsize=15,
+                    verticalalignment='top', bbox=props)
+        else: 
+            ax.text(65,48,textstr, fontsize=15,verticalalignment='top',bbox=props)
+        
+        
+        #plt.colorbar(cc)
+        plt.show()     
+
+    # rest is currently kept but not needed anymore.
+
+   
+
+   
+
+if __name__=='__main__':
+
+    # WISE
+    path='/uni-mainz.de/homes/jriaz/Msc_Thesis/Init_lat_theta'
+
+    #path="/home/dkunkel/output/2022_msc_bsc_projects/riaz/2023/pyscripts/2017/03"
+    #path="/home/dkunkel/output/2022_msc_bsc_projects/riaz/2023/pyscripts/2017/04"
+    # era5, isentropic data
+    ff = 'isen_era5_1712_merge.nc'
+    #ff="isen_era5_17042012.nc"
+    #ff="isen_era5_merge_201703.nc"
+    # variable
+    var = 'PV'
+    # full path
+    fpath=path+'/'+ff
+    
+
+    print (fpath, var)
+    main(fpath,var,lstat='mean')
+
+
